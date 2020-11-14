@@ -1,0 +1,301 @@
+---
+title: "Analyses"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+# turn off scientific notation
+options(scipen = 999)
+
+```
+
+# Dependencies 
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(sjPlot)
+library(brms)
+library(parallel)
+library(bayestestR)
+
+```
+
+# Data
+
+```{r}
+
+data_processed <- read.csv("../data/processed/data_processed.csv") %>%
+  mutate(country = as.factor(country),
+         site = as.factor(site),
+         condition = fct_relevel(as.factor(condition), "low social pressure", "high social pressure"),
+         age = as.character(age), # NB age is a character as ">45" was the top category
+         gender = as.factor(gender),
+         ethnicity = as.factor(ethnicity)) %>%
+  rename(indirect = diff_in_mean_ratings_indirect,
+         direct = diff_in_mean_ratings_direct)
+
+```
+
+# Changes from ML5 analyses
+
+ML5's models: 
+
+- Did not exclude for missing or duplicate data. This was corrected: 5% of data was excluded on this basis.
+- Stated that data collection at the Italian vs. US sites was considered meaningful (i.e., concerns raised by Payne about data collection in Italian motivated this replication to be run). Non-random assignment to Italian vs USA data collection was therefore important to acknowledge in the models' random structures, but was not in the ML5's models. This was corrected.
+- Found singular model fits. Bayesian modeling via MCMC may allow for better model convergence.
+- Did not allow a random slope for indirect (ie assumed implicit-explicit correlations were identical between sites). Inspection of the site level data suggests these correlations did indeed vary significantly (see below table). This was corrected.
+
+```{r}
+
+data_processed %>%
+  group_by(site) %>%
+  summarize(n = n(),
+            implicit_explicit_correlation = round(cor(direct, indirect), 2)) %>%
+  arrange(desc(implicit_explicit_correlation))
+
+```
+
+# Testing primary replication effect
+
+## Fit models
+
+```{r}
+
+# Step 1 model - all but interaction
+fit_1 <- lmer(direct ~ indirect + condition + (indirect + condition | country/site),
+              REML = FALSE,
+              data = data_processed)
+
+# Step 2 model - adds interaction
+fit_2 <- lmer(direct ~ indirect * condition + (indirect + condition | country/site),
+              REML = FALSE,
+              data = data_processed)
+
+```
+
+## Inspect model 2 (including interaction)
+
+```{r}
+
+tab_model(fit_2, 
+          show.std = TRUE,
+          emph.p = FALSE,
+          col.order = c("est", "ci", "std.est", "std.ci", "p"))
+
+```
+
+## ANOVA
+
+```{r}
+
+anova(fit_1, fit_2)
+
+```
+
+## $R^2$ for interaction effect
+
+```{r}
+
+r.squaredLR(fit_2, fit_1)
+
+```
+
+## Plot predictions
+
+```{r fig.height=6, fig.width=7.5, message=FALSE, warning=FALSE}
+
+plot_model(fit_2, type = "int") +  # , show.data = TRUE
+  xlim(-2, 2) +
+  ylim(-2, 2) +
+  scale_color_viridis_d(begin = 0.3, end = 0.7) +
+  scale_fill_viridis_d(begin = 0.3, end = 0.7) +
+  xlab("Indirect measure\n(Instruction to evaluate primes)") +
+  ylab("Direct measure\n(Instruction to evaluate targets)") +
+  ggtitle("")
+
+```
+
+# Moderation by country
+
+Payne argued that conducting the replication in Italy and in Italian was problematic. 
+
+```{r}
+
+fit_3 <- lmer(direct ~ indirect * condition * country + (indirect + condition | site),
+              REML = FALSE,
+              data = data_processed)
+
+tab_model(fit_3, 
+          emph.p = FALSE,
+          col.order = c("est", "ci", "std.est", "std.ci", "p"))
+
+plot_model(fit_3, type = "int") +  # , show.data = TRUE
+  xlim(-2, 2) +
+  ylim(-2, 2) +
+  scale_color_viridis_d(begin = 0.3, end = 0.7) +
+  scale_fill_viridis_d(begin = 0.3, end = 0.7) +
+  xlab("Indirect measure\n(Instruction to evaluate primes)") +
+  ylab("Direct measure\n(Instruction to evaluate targets)") +
+  ggtitle("")
+
+```
+
+
+# Bayesian models
+
+Given singular fit, comparable Bayesian models were fit as a sensitivity analysis.  
+
+## Fit models
+
+```{r}
+
+# create needed directory
+dir.create("models")
+
+# Step 1 model - all but interaction
+fit_1_bayesian <- brm(direct ~ indirect + condition + (indirect + condition | country/site),
+                      data      = data_processed,
+                      file      = "models/fit_1_bayesian",
+                      prior     = prior(normal(0, 2)),
+                      iter      = 13000,
+                      warmup    = 3000,
+                      control   = list(adapt_delta = 0.95),  # to avoid divergent transitions
+                      chains    = 4,
+                      cores     = parallel::detectCores(),
+                      save_pars = save_pars(all = TRUE))
+
+# Step 2 model - adds interaction
+fit_2_bayesian <- brm(direct ~ indirect * condition + (indirect + condition | country/site),
+                      data      = data_processed,
+                      file      = "models/fit_2_bayesian",
+                      prior     = prior(normal(0, 2)),
+                      iter      = 13000,
+                      warmup    = 3000,
+                      control   = list(adapt_delta = 0.95),  # to avoid divergent transitions
+                      chains    = 4,
+                      cores     = parallel::detectCores(),
+                      save_pars = save_pars(all = TRUE))
+
+add_criterion(fit_1_bayesian, criterion = c("loo", "bayes_R2"))
+add_criterion(fit_2_bayesian, criterion = c("loo", "bayes_R2"))
+
+```
+
+## Inspect model 2 (including interaction)
+
+```{r}
+
+tab_model(fit_2_bayesian, 
+          show.std = TRUE,
+          emph.p = FALSE)
+
+```
+
+## LOO
+
+```{r}
+
+loo(fit_1_bayesian)
+loo(fit_2_bayesian)
+
+```
+
+## Bayes factor
+
+```{r}
+
+summary(fit_2_bayesian)
+
+bayesfactor_models(fit_2_bayesian, denominator = fit_1_bayesian)
+
+```
+
+## $R^2$ for interaction effect
+
+```{r}
+
+bind_rows(as_tibble(bayes_R2(fit_1_bayesian)) %>% mutate(model = "fit_1"),
+          as_tibble(bayes_R2(fit_2_bayesian)) %>% mutate(model = "fit_2")) %>%
+  select(model, Beta = Estimate, CI_lower = Q2.5, CI_upper = Q97.5) %>%
+  mutate_if(is.numeric, round, digits = 3)
+
+```
+
+## Plot predictions
+
+```{r fig.height=6, fig.width=7.5, message=FALSE, warning=FALSE}
+
+# plot_model(fit_2_bayesian, type = "int") +  # , show.data = TRUE
+#   xlim(-2, 2) +
+#   ylim(-2, 2) +
+#   scale_color_viridis_d(begin = 0.3, end = 0.7) +
+#   xlab("Indirect measure\n(Instruction to evaluate primes)") +
+#   ylab("Direct measure\n(Instruction to evaluate targets)") +
+#   ggtitle("")
+
+```
+
+## Simplified models
+
+```{r}
+
+# Step 1 model - all but interaction
+fit_3_bayesian <- brm(direct ~ indirect + condition,
+                      data    = data_processed,
+                      file    = "models/fit_3_bayesian",
+                      prior   = prior(normal(0, 1)),
+                      iter    = 6000,
+                      warmup  = 3000,
+                      control = list(adapt_delta = 0.95),  # to avoid divergent transitions
+                      chains  = 4,
+                      cores   = parallel::detectCores())
+
+# Step 2 model - adds interaction
+fit_4_bayesian <- brm(direct ~ indirect * condition,
+                      data    = data_processed,
+                      file    = "models/fit_4_bayesian",
+                      prior   = prior(normal(0, 1)),
+                      iter    = 6000,
+                      warmup  = 3000,
+                      control = list(adapt_delta = 0.95),  # to avoid divergent transitions
+                      chains  = 4,
+                      cores   = parallel::detectCores())
+
+add_criterion(fit_3_bayesian, criterion = c("bayes_R2"))
+add_criterion(fit_4_bayesian, criterion = c("bayes_R2"))
+
+bind_rows(as_tibble(bayes_R2(fit_3_bayesian)) %>% mutate(model = "fit_3"),
+          as_tibble(bayes_R2(fit_4_bayesian)) %>% mutate(model = "fit_4")) %>%
+  select(model, Beta = Estimate, CI_lower = Q2.5, CI_upper = Q97.5) %>%
+  mutate_if(is.numeric, round, digits = 3)
+
+plot_model(fit_4_bayesian)
+
+```
+
+# Session info
+
+```{r}
+
+sessionInfo()
+
+```
+
+
+

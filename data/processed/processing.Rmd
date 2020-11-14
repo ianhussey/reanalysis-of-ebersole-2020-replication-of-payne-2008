@@ -1,0 +1,235 @@
+---
+title: "Data processing"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+```
+
+# Dependencies 
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+
+```
+
+# Tidying
+
+```{r}
+
+# read in and wrangle data
+data_tidied <- 
+  bind_rows(read_csv(file = "../raw/Genova_ML5.csv") %>%
+              mutate(site = "Genova",
+                     country = "Italy",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/Milan_ML5.csv") %>%
+              mutate(site = "Milan",
+                     country = "Italy",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/Rome_ML5.csv") %>%
+              mutate(site = "Rome",
+                     country = "Italy",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/UCF_ML5.csv") %>%
+              mutate(site = "UCF",
+                     country = "USA",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/UVA_ML5.csv") %>%
+              mutate(site = "UVA",
+                     country = "USA",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/Padova_ML5.csv") %>%
+              mutate(site = "Padova",
+                     country = "Italy",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/VCU_ML5.csv") %>%
+              mutate(site = "VCU",
+                     country = "USA",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5)),
+            read_csv(file = "../raw/PLU_ML5.csv") %>%
+              mutate(site = "PLU",
+                     country = "USA",
+                     unique_id = paste0(site, subject),
+                     stimulusitem5 = as.character(stimulusitem5))) %>%
+  
+  # add experiment condition - not in data, derived from subject 
+  mutate(condition = ifelse(subject %% 2 == 0, "high social pressure",
+                            ifelse(subject %% 2 == 1, "low social pressure", NA))) %>%
+  
+  # completeness
+  group_by(unique_id) %>%
+  mutate(n_rows = n(),
+         complete_data = ifelse(n_rows == 100, TRUE, FALSE)) %>%
+  ungroup() %>%
+  
+  # exclusions
+  # because 34 and 162 because they could read the Chinese characters
+  filter(!unique_id %in% c("UVA834", "UVA962")) %>%
+  # subject < 3400 (5000-1600) ### in ML5 but not explained??
+  filter(subject < 3400) %>%
+  
+  # recoding
+  mutate(rating = case_when(response == "minus2" ~ 1,
+                            response == "minus1" ~ 2,
+                            response == "plus1" ~ 3,
+                            response == "plus2" ~ 4)) %>%
+  mutate(evaluative_task = ifelse(trialcode %in% c("whitedirect", "blackdirect"), "direct", 
+                                  ifelse(trialcode %in% c("whiteindirect", "blackindirect"), "indirect", NA)),
+         prime_type = ifelse(trialcode %in% c("whitedirect", "whiteindirect"), "white", 
+                             ifelse(trialcode %in% c("blackdirect", "blackindirect"), "black", NA)))
+
+```
+
+# Validation checks
+
+```{r}
+
+data_tidied %>%
+  distinct(unique_id, .keep_all = TRUE) %>%
+  count(complete_data)
+
+data_tidied %>%
+  distinct(unique_id, .keep_all = TRUE) %>%
+  count(n_rows) %>%
+  arrange(desc(n))
+
+```
+
+- 100 participants have incomplete or excess data. 50 appear to have doubled data; possibly participant codes that got reused and are actually two participants. explore their demographics to see if they are duplicate same participants or different participants, i.e., can this data be saved somehow?
+
+# Additional exclusions 
+
+- compared to ML5, I added data exclusions for data completeness and for participant codes < 1. 
+
+```{r}
+
+data_after_exclusions <- data_tidied %>%
+# missing participant code ### WASNT IN ML5
+  filter(!is.na(subject)) %>%
+  # subject is not a demo ### WASNT IN ML5
+  filter(subject > 0) %>%
+  # data completeness ### NOT INCLUDED IN ML5
+  filter(complete_data == TRUE)
+
+```
+
+# Conditions
+
+```{r}
+
+data_conditions <- data_after_exclusions %>%
+  distinct(unique_id, condition, site, country)
+
+```
+
+# Demographics
+
+```{r}
+
+data_demographics <- data_after_exclusions %>%
+  # filter out only the demogrpahics items
+  filter(blockcode == "demo") %>%
+  select(unique_id, trialcode, response) %>%
+  # recode italian to english
+  mutate(trialcode = case_when(trialcode == "anni" ~ "age",
+                               trialcode == "etnia" ~ "ethnicity",
+                               trialcode == "sesso" ~ "gender",
+                               TRUE ~ trialcode)) %>%
+  # reshape to wide format
+  pivot_wider(names_from = trialcode,
+              values_from = response) %>%
+  # recode from numeric to factor
+  mutate(gender = case_when(gender == 1 ~ "male",  # codings validated against the inquisit script
+                            gender == 2 ~ "female",
+                            gender == 3 ~ "other",
+                            gender == 4 ~ "prefer not to say")) %>%
+  # recode age to english
+  mutate(age = case_when(age == "pi?? di 45" ~ "over 45",
+                         TRUE ~ age))
+
+```
+
+- NB rescoring of ethnicity from italian to english still needs to be done
+
+# Scoring of direct and indirect evaluative measures
+
+```{r}
+
+data_evaluations <- data_after_exclusions %>%
+  # filter out only the evaluations tasks
+  filter(evaluative_task %in% c("direct", "indirect")) %>%
+  # calculate mean ratings for each task and prime type
+  group_by(unique_id, condition, evaluative_task, prime_type) %>%
+  summarize(mean_rating = mean(rating), .groups = "drop") %>%
+  # wrangle the data to wide format and clarify names
+  pivot_wider(names_from = prime_type,
+              values_from = mean_rating) %>%
+  rename(mean_rating_white_primes = white,
+         mean_rating_black_primes = black) %>%
+  mutate(diff_in_mean_ratings = mean_rating_white_primes - mean_rating_black_primes) %>%
+  pivot_wider(names_from = evaluative_task,
+              values_from = c(diff_in_mean_ratings, 
+                              mean_rating_white_primes,
+                              mean_rating_black_primes))
+
+```
+
+# Combine and write to disk
+
+```{r}
+
+data_processed <- data_conditions %>%
+  full_join(data_demographics, by = "unique_id") %>%
+  full_join(data_evaluations, by = c("unique_id", "condition")) %>%
+  select(unique_id, 
+         country,                          
+         site, 
+         condition,                        
+         gender, 
+         age,                              
+         ethnicity, 
+         diff_in_mean_ratings_direct,      
+         diff_in_mean_ratings_indirect, 
+         mean_rating_white_primes_direct,  
+         mean_rating_white_primes_indirect,
+         mean_rating_black_primes_direct,  
+         mean_rating_black_primes_indirect)
+
+write_csv(data_processed, "data_processed.csv")
+
+```
+
+# Things included in ML5 code not included here:
+
+- Ratio scoring. Instead of differences in means, Vianello et al. 2015 used ratio scores: mean_rating_white_primes / mean_rating_black_primes. Because this is uncommon in the AMP literature I don't do it here.
+
+# Session info
+
+```{r}
+
+sessionInfo()
+
+```
+
+
